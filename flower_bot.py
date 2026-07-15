@@ -356,6 +356,14 @@ def setup_scheduler(app: Application):
 
 # ========================= ЗАПУСК =========================
 
+async def post_init(app: Application):
+    """Викликається один раз одразу після старту event loop бота —
+    саме тут безпечно запускати APScheduler (у Python 3.10+/3.14
+    планувальник більше не створює event loop сам, тому запуск
+    до старту бота призводить до RuntimeError)."""
+    setup_scheduler(app)
+
+
 def main():
     logging.basicConfig(level=logging.INFO)
 
@@ -367,14 +375,12 @@ def main():
 
     db_init()
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = Application.builder().token(BOT_TOKEN).post_init(post_init).build()
 
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CallbackQueryHandler(on_callback))
-
-    setup_scheduler(app)
 
     app.run_polling()
 
