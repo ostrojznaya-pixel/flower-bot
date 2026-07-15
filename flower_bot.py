@@ -200,6 +200,18 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = build_summary_text()
     await update.message.reply_text(text)
 
+
+async def cmd_test_indoor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручний тест нагадування 'квіти в закладі' — не чекаючи розкладу."""
+    chat_id = update.effective_chat.id
+    await send_single_reminder(context.application, chat_id, "indoor")
+
+
+async def cmd_test_outdoor(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Ручний тест нагадування 'квіти на вулиці' — не чекаючи розкладу."""
+    chat_id = update.effective_chat.id
+    await send_single_reminder(context.application, chat_id, "outdoor")
+
 # ========================= КНОПКИ =========================
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -379,6 +391,8 @@ def main():
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("register", cmd_register))
     app.add_handler(CommandHandler("summary", cmd_summary))
+    app.add_handler(CommandHandler("test_indoor", cmd_test_indoor))
+    app.add_handler(CommandHandler("test_outdoor", cmd_test_outdoor))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     app.run_polling()
