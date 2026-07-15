@@ -81,7 +81,8 @@ def db_init():
     cur = conn.cursor()
     cur.execute("""
         CREATE TABLE IF NOT EXISTS chats (
-            chat_id INTEGER PRIMARY KEY
+            chat_id INTEGER PRIMARY KEY,
+            thread_id INTEGER
         )
     """)
     cur.execute("""
@@ -98,21 +99,27 @@ def db_init():
     conn.close()
 
 
-def db_register_chat(chat_id: int):
+def db_register_chat(chat_id: int, thread_id: int = None):
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("INSERT OR IGNORE INTO chats (chat_id) VALUES (?)", (chat_id,))
+    cur.execute(
+        "INSERT INTO chats (chat_id, thread_id) VALUES (?, ?) "
+        "ON CONFLICT(chat_id) DO UPDATE SET thread_id = excluded.thread_id",
+        (chat_id, thread_id),
+    )
     conn.commit()
     conn.close()
 
 
 def db_get_chats():
+    """Повертає список (chat_id, thread_id) — thread_id може бути None,
+    якщо в чаті не увімкнені теми (topics)."""
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
-    cur.execute("SELECT chat_id FROM chats")
+    cur.execute("SELECT chat_id, thread_id FROM chats")
     rows = cur.fetchall()
     conn.close()
-    return [r[0] for r in rows]
+    return rows
 
 
 def db_log_watering(watering_type: str, person: str = None, status: str = "done"):
@@ -192,8 +199,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_register(update: Update, context: ContextTypes.DEFAULT_TYPE):
     chat_id = update.effective_chat.id
-    db_register_chat(chat_id)
-    await update.message.reply_text("Цей чат зареєстровано для нагадувань про полив ✅")
+    thread_id = update.effective_message.message_thread_id  # None, якщо теми не увімкнені
+    db_register_chat(chat_id, thread_id)
+    await update.message.reply_text("Цей чат/тема зареєстровано для нагадувань про полив ✅")
 
 
 async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -204,13 +212,15 @@ async def cmd_summary(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_test_indoor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручний тест нагадування 'квіти в закладі' — не чекаючи розкладу."""
     chat_id = update.effective_chat.id
-    await send_single_reminder(context.application, chat_id, "indoor")
+    thread_id = update.effective_message.message_thread_id
+    await send_single_reminder(context.application, chat_id, "indoor", thread_id)
 
 
 async def cmd_test_outdoor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Ручний тест нагадування 'квіти на вулиці' — не чекаючи розкладу."""
     chat_id = update.effective_chat.id
-    await send_single_reminder(context.application, chat_id, "outdoor")
+    thread_id = update.effective_message.message_thread_id
+    await send_single_reminder(context.application, chat_id, "outdoor", thread_id)
 
 # ========================= КНОПКИ =========================
 
@@ -239,6 +249,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data.startswith("postpone:"):
         watering_type = data.split(":", 1)[1]
         chat_id = query.message.chat_id
+        thread_id = query.message.message_thread_id
         label = TYPE_LABELS.get(watering_type, watering_type)
         run_time = datetime.now(TIMEZONE) + timedelta(minutes=POSTPONE_MINUTES)
 
@@ -249,7 +260,7 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             send_single_reminder,
             "date",
             run_date=run_time,
-            args=[context.application, chat_id, watering_type],
+            args=[context.application, chat_id, watering_type, thread_id],
         )
 
         await query.edit_message_text(
@@ -265,21 +276,22 @@ async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # ========================= ПЛАНИРОВЩИК =========================
 
-async def send_single_reminder(app: Application, chat_id: int, watering_type: str):
-    """Надсилає нагадування в один конкретний чат (використовується для 'Перенести')."""
+async def send_single_reminder(app: Application, chat_id: int, watering_type: str, thread_id: int = None):
+    """Надсилає нагадування в один конкретний чат/тему (використовується для 'Перенести' і тестів)."""
     texts = {
         "indoor": "🌸 Нагадування: час полити квіти в закладі!",
         "outdoor": "🌿 Нагадування: полив квітів на вулиці!",
     }
     await app.bot.send_message(
         chat_id=chat_id,
+        message_thread_id=thread_id,
         text=texts.get(watering_type, "🌱 Нагадування про полив!"),
         reply_markup=build_mark_keyboard(watering_type),
     )
-    schedule_escalation(app, chat_id, watering_type)
+    schedule_escalation(app, chat_id, watering_type, thread_id)
 
 
-def schedule_escalation(app: Application, chat_id: int, watering_type: str):
+def schedule_escalation(app: Application, chat_id: int, watering_type: str, thread_id: int = None):
     """Ставить перевірку через ESCALATION_MINUTES: чи відповів хтось на нагадування."""
     scheduler = app.bot_data["scheduler"]
     run_time = datetime.now(TIMEZONE) + timedelta(minutes=ESCALATION_MINUTES)
@@ -287,11 +299,11 @@ def schedule_escalation(app: Application, chat_id: int, watering_type: str):
         check_escalation,
         "date",
         run_date=run_time,
-        args=[app, chat_id, watering_type],
+        args=[app, chat_id, watering_type, thread_id],
     )
 
 
-async def check_escalation(app: Application, chat_id: int, watering_type: str):
+async def check_escalation(app: Application, chat_id: int, watering_type: str, thread_id: int = None):
     """Якщо ніхто не відповів за ESCALATION_MINUTES — шле тривожне нагадування адмінам."""
     if db_has_response_today(watering_type):
         return  # хтось вже відреагував — ескалація не потрібна
@@ -303,26 +315,31 @@ async def check_escalation(app: Application, chat_id: int, watering_type: str):
         f"Ніхто не відповів на нагадування вже {ESCALATION_MINUTES} хв!\n"
         f"{mentions}"
     )
-    await app.bot.send_message(chat_id=chat_id, text=text, reply_markup=build_mark_keyboard(watering_type))
+    await app.bot.send_message(
+        chat_id=chat_id, message_thread_id=thread_id,
+        text=text, reply_markup=build_mark_keyboard(watering_type),
+    )
 
 async def send_indoor_reminder(app: Application):
-    for chat_id in db_get_chats():
+    for chat_id, thread_id in db_get_chats():
         await app.bot.send_message(
             chat_id=chat_id,
+            message_thread_id=thread_id,
             text="🌸 Нагадування: час полити квіти в закладі!",
             reply_markup=build_mark_keyboard("indoor"),
         )
-        schedule_escalation(app, chat_id, "indoor")
+        schedule_escalation(app, chat_id, "indoor", thread_id)
 
 
 async def send_outdoor_reminder(app: Application):
-    for chat_id in db_get_chats():
+    for chat_id, thread_id in db_get_chats():
         await app.bot.send_message(
             chat_id=chat_id,
+            message_thread_id=thread_id,
             text="🌿 Нагадування: полив квітів на вулиці!",
             reply_markup=build_mark_keyboard("outdoor"),
         )
-        schedule_escalation(app, chat_id, "outdoor")
+        schedule_escalation(app, chat_id, "outdoor", thread_id)
 
 
 def build_summary_text():
@@ -342,8 +359,8 @@ def build_summary_text():
 
 async def send_weekly_summary(app: Application):
     text = build_summary_text()
-    for chat_id in db_get_chats():
-        await app.bot.send_message(chat_id=chat_id, text=text)
+    for chat_id, thread_id in db_get_chats():
+        await app.bot.send_message(chat_id=chat_id, message_thread_id=thread_id, text=text)
 
 
 def setup_scheduler(app: Application):
