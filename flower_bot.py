@@ -222,6 +222,30 @@ async def cmd_test_outdoor(update: Update, context: ContextTypes.DEFAULT_TYPE):
     thread_id = update.effective_message.message_thread_id
     await send_single_reminder(context.application, chat_id, "outdoor", thread_id)
 
+
+async def cmd_debug_time(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показує поточний час сервера і найближчі заплановані нагадування — для перевірки таймзони."""
+    now_kyiv = datetime.now(TIMEZONE)
+    now_utc = datetime.utcnow()
+
+    lines = [
+        f"🕒 Час за Києвом: {now_kyiv.strftime('%Y-%m-%d %H:%M:%S %Z')}",
+        f"🌍 Час UTC: {now_utc.strftime('%Y-%m-%d %H:%M:%S')}",
+        "",
+        "📅 Найближчі заплановані завдання:",
+    ]
+
+    scheduler = context.application.bot_data.get("scheduler")
+    if scheduler:
+        for job in scheduler.get_jobs():
+            next_run = job.next_run_time
+            if next_run:
+                lines.append(f"— {job.name}: {next_run.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+    else:
+        lines.append("Планувальник ще не запущений.")
+
+    await update.message.reply_text("\n".join(lines))
+
 # ========================= КНОПКИ =========================
 
 async def on_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -367,15 +391,18 @@ def setup_scheduler(app: Application):
     scheduler = AsyncIOScheduler(timezone=TIMEZONE)
 
     scheduler.add_job(
-        send_indoor_reminder, CronTrigger(day_of_week=INDOOR_DAYS, hour=INDOOR_HOUR, minute=INDOOR_MINUTE),
+        send_indoor_reminder,
+        CronTrigger(day_of_week=INDOOR_DAYS, hour=INDOOR_HOUR, minute=INDOOR_MINUTE, timezone=TIMEZONE),
         args=[app],
     )
     scheduler.add_job(
-        send_outdoor_reminder, CronTrigger(hour=OUTDOOR_HOUR, minute=OUTDOOR_MINUTE),
+        send_outdoor_reminder,
+        CronTrigger(hour=OUTDOOR_HOUR, minute=OUTDOOR_MINUTE, timezone=TIMEZONE),
         args=[app],
     )
     scheduler.add_job(
-        send_weekly_summary, CronTrigger(day_of_week="sun", hour=SUMMARY_HOUR, minute=SUMMARY_MINUTE),
+        send_weekly_summary,
+        CronTrigger(day_of_week="sun", hour=SUMMARY_HOUR, minute=SUMMARY_MINUTE, timezone=TIMEZONE),
         args=[app],
     )
 
@@ -410,6 +437,7 @@ def main():
     app.add_handler(CommandHandler("summary", cmd_summary))
     app.add_handler(CommandHandler("test_indoor", cmd_test_indoor))
     app.add_handler(CommandHandler("test_outdoor", cmd_test_outdoor))
+    app.add_handler(CommandHandler("debug_time", cmd_debug_time))
     app.add_handler(CallbackQueryHandler(on_callback))
 
     app.run_polling()
